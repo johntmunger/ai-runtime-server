@@ -43,38 +43,41 @@ The runtime exposes a simple API used by the chat interface.
 
 # System Architecture
 
-This repository sits in the middle of the system.
+This repository represents the **ai-runtime-server** layer of the system shown below.
 
-```
-runtime-ui
-│
-▼
-ai-runtime-server
-│
-▼
-Postgres + pgvector
-│
-▼
-Embedded documentation
-```
-
-Full system architecture:
-
-```
-runtime-ui
-│
-▼
-ai-runtime-server
-│
-▼
-AI Control Plane Runtime
-│
-▼
-rag-mdn ingestion pipeline
-│
-▼
-pgvector database
-```
+                 USER
+                  │
+                  ▼
+            ┌─────────────┐
+            │  runtime-ui │
+            │ React Chat  │
+            └─────────────┘
+                  │
+                  ▼
+       ┌──────────────────────┐
+       │   ai-runtime-server   │
+       │   RAG Runtime API     │
+       └──────────────────────┘
+                  │
+                  ▼
+         ┌─────────────────┐
+         │  control-plane  │
+         │ Agent Runtime   │
+         └─────────────────┘
+                  │
+                  ▼
+           ┌──────────────┐
+           │   rag-mdn     │
+           │ Knowledge     │
+           │ Ingestion     │
+           └──────────────┘
+                  │
+                  ▼
+         ┌─────────────────┐
+         │ Postgres +      │
+         │ pgvector        │
+         │ Vector Database │
+         └─────────────────┘
 
 ---
 
@@ -115,7 +118,7 @@ The resulting answer includes **citations back to the original documentation sou
 
 ## Health Check
 
-**GET /** 
+**GET /**
 
 Response:
 
@@ -196,11 +199,11 @@ This endpoint performs the full **RAG reasoning pipeline**.
 └─ .env
 ```
 
-| File | Purpose |
-|------|---------|
-| `server.ts` | Main runtime server |
-| `package.json` | Dependencies and scripts |
-| `.env` | Environment configuration |
+| File           | Purpose                   |
+| -------------- | ------------------------- |
+| `server.ts`    | Main runtime server       |
+| `package.json` | Dependencies and scripts  |
+| `.env`         | Environment configuration |
 
 ---
 
@@ -246,16 +249,16 @@ curl localhost:3000/chat \
 
 ---
 
-# Related Repositories
+# System Repositories
 
-This runtime is part of a modular system.
+This runtime is part of a modular AI system composed of several repositories.
 
-| Repository | Purpose |
-|------------|---------|
-| control-plane | agent runtime architecture |
-| ai-runtime-server | RAG runtime and chat API |
-| rag-mdn | documentation ingestion and embeddings |
-| runtime-ui | chat interface demo |
+| Repository                                                            | Description                                                      |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| [control-plane](https://github.com/johntmunger/ai-control-plane)      | Agent runtime architecture (orchestrator, policy, kernel, tools) |
+| [ai-runtime-server](https://github.com/johntmunger/ai-runtime-server) | Retrieval-Augmented Generation (RAG) runtime and chat API        |
+| [rag-mdn](https://github.com/johntmunger/retrieval-grounded-llm)      | Documentation ingestion and embedding pipeline                   |
+| [runtime-ui](https://github.com/johntmunger/ai-runtime-ui)            | Chat interface for interacting with the runtime                  |
 
 System architecture:
 
