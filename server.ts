@@ -2,20 +2,19 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import express from "express";
 import cors from "cors";
-import postgres from "postgres";
-import { drizzle } from "drizzle-orm/postgres-js";
-import { sql } from "drizzle-orm";
 import "dotenv/config";
+
+import { orchestrate } from "../ai-control-plane/src/runtime/orchestrator";
+import { executeKernel } from "../ai-control-plane/src/runtime/kernel";
+import { createTrace } from "../ai-control-plane/src/runtime/trace";
+
+import { initTools } from "../ai-control-plane/src/tools/init";
 
 /*
 --------------------------------------------------
 Environment
 --------------------------------------------------
 */
-
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is missing in .env");
-}
 
 if (!process.env.OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY is missing in .env");
@@ -24,8 +23,6 @@ if (!process.env.OPENAI_API_KEY) {
 if (!process.env.ANTHROPIC_API_KEY) {
   throw new Error("ANTHROPIC_API_KEY is missing in .env");
 }
-
-console.log("DATABASE_URL:", process.env.DATABASE_URL);
 
 /*
 --------------------------------------------------
@@ -38,18 +35,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/*
---------------------------------------------------
-Database
---------------------------------------------------
-*/
-
-const client = postgres(process.env.DATABASE_URL);
-const db = drizzle(client);
+initTools();
 
 /*
 --------------------------------------------------
-LLM Clients
+LLM Clients (optional future use)
 --------------------------------------------------
 */
 
@@ -60,24 +50,6 @@ const openai = new OpenAI({
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
-
-/*
---------------------------------------------------
-Embedding Function
---------------------------------------------------
-*/
-
-async function embedQuery(query: string): Promise<number[]> {
-  const response = await openai.embeddings.create({
-    model: "text-embedding-3-small",
-    input: query,
-  });
-
-  const embedding = response.data[0].embedding;
-
-  // Trim to match pgvector column size (1024)
-  return embedding.slice(0, 1024);
-}
 
 /*
 --------------------------------------------------
@@ -94,49 +66,94 @@ app.get("/", (_req, res) => {
 
 /*
 --------------------------------------------------
-Debug Endpoint (Vector Search Only)
+Shared Answer Extraction (FIXED)
 --------------------------------------------------
 */
 
-app.post("/search", async (req, res) => {
-  try {
-    const { query } = req.body;
+function extractAnswer(result: any): string {
+  // 1. Tool / system error
+  if ("error" in result && result.error) {
+    const messages = result.error?.message;
+    if (Array.isArray(messages) && messages.length) {
+      return messages
+        .map((m: any) => m?.text)
+        .filter(Boolean)
+        .join("\n");
+    }
+    return result.error?.details ?? "error";
+  }
 
-    if (!query) {
-      return res.status(400).json({
-        error: "Query is required",
-      });
+  // 2. Chat result (second pass)
+  if (result?.type === "chat") {
+    return result.content ?? "error";
+  }
+
+  // 3. Tool result (first pass)
+  if (result?.result) {
+    const r = result.result;
+
+    if (typeof r === "object" && "result" in r) {
+      return String(r.result);
     }
 
-    const embedding = await embedQuery(query);
+    return JSON.stringify(r);
+  }
 
-    const results = await db.execute(sql`
-      SELECT text, source
-      FROM document_embeddings
-      ORDER BY embedding <-> ${sql.raw(`'[${embedding.join(",")}]'::vector`)}
-      LIMIT 30
-    `);
+  return "error";
+}
 
-    const rows = results as any[];
-    res.json(rows);
+/*
+--------------------------------------------------
+Agent Debug Endpoint (GET)
+--------------------------------------------------
+*/
+
+app.get("/agent", async (_req, res) => {
+  try {
+    const trace = createTrace();
+
+    const kernelInput = await orchestrate("Add 2 and 3", trace);
+
+    let result = await executeKernel(kernelInput, trace);
+
+    // 🔁 second pass (tool → chat)
+    if ("result" in result && result.tool) {
+      const chatInput = {
+        type: "chat" as const,
+        message: JSON.stringify(result.result, null, 2),
+      };
+
+      result = await executeKernel(chatInput, trace);
+    }
+
+    const answer = extractAnswer(result);
+
+    res.json({
+      answer,
+      trace: trace.events,
+    });
   } catch (error) {
-    console.error("Search error:", error);
+    console.error("Agent GET error:", error);
 
     res.status(500).json({
-      error: "Search failed",
+      error: "Agent execution failed",
     });
   }
 });
 
 /*
 --------------------------------------------------
-Chat Endpoint (Full RAG Pipeline)
+Agent Endpoint (POST)
 --------------------------------------------------
 */
 
-app.post("/chat", async (req, res) => {
+app.post("/agent", async (req, res) => {
   try {
+    console.log("RAW BODY:", req.body);
+
     const { query } = req.body;
+
+    console.log("QUERY:", query);
 
     if (!query) {
       return res.status(400).json({
@@ -144,101 +161,33 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    /*
-    Step 1 — Embed Query
-    */
+    const trace = createTrace();
 
-    const embedding = await embedQuery(query);
+    const kernelInput = await orchestrate(query, trace);
 
-    /*
-    Step 2 — Hybrid Retrieval
-    */
+    let result = await executeKernel(kernelInput, trace);
 
-    const results = await db.execute(sql`
-        SELECT text, source
-        FROM document_embeddings
-        ORDER BY
-          ts_rank(
-            to_tsvector('english', text),
-            plainto_tsquery('english', ${query})
-          ) DESC,
-          embedding <-> ${sql.raw(`'[${embedding.join(",")}]'::vector`)}
-        LIMIT 40
-      `);
+    // 🔁 second pass (tool → chat)
+    if ("result" in result && result.tool) {
+      const chatInput = {
+        type: "chat" as const,
+        message: JSON.stringify(result.result, null, 2),
+      };
 
-    const rows = results as any[];
-
-    if (!rows.length) {
-      return res.json({
-        answer: "No relevant documentation was found.",
-        sources: [],
-      });
+      result = await executeKernel(chatInput, trace);
     }
 
-    /*
-    Step 3 — Build Context
-    */
-
-    const context = rows
-      .map((row, i) => `Source ${i + 1} (${row.source}):\n${row.text}`)
-      .join("\n\n");
-
-    /*
-    Step 4 — Claude Reasoning
-    */
-
-    const response = await anthropic.messages.create({
-      model: "claude-3-haiku-20240307",
-      max_tokens: 800,
-      messages: [
-        {
-          role: "user",
-          content: `
-You are an expert JavaScript assistant.
-
-Answer the question using the documentation context below.
-If multiple sections are relevant, combine them into a clear explanation.
-If the answer cannot be found in the context, say so.
-
-Context:
-${context}
-
-Question:
-${query}
-          `,
-        },
-      ],
-    });
-
-    const message = response.content[0];
-    const answer = message.type === "text" ? message.text : "";
-
-    const sources = [
-      ...new Map(
-        rows.map((r) => [
-          r.source,
-          {
-            title: r.source
-              .replace("/index.md", "")
-              .split("/")
-              .pop()
-              ?.replace(/_/g, " "),
-            url: `https://developer.mozilla.org/en-US/docs/Web/JavaScript/${r.source.replace("/index.md", "")}`,
-            excerpt: r.text.slice(0, 180),
-          },
-        ]),
-      ).values(),
-    ].slice(0, 5);
+    const answer = extractAnswer(result);
 
     res.json({
       answer,
-      sources,
+      trace: trace.events,
     });
   } catch (error) {
-    console.error("Chat error:", error);
+    console.error("Agent error:", error);
 
     res.status(500).json({
-      error: "Chat failed",
+      error: "Agent execution failed",
     });
   }
 });
