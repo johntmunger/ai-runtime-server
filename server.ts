@@ -57,10 +57,20 @@ Health Check
 --------------------------------------------------
 */
 
+const SERVER_VERSION = "v0.1-agent-runtime";
+
 app.get("/", (_req, res) => {
   res.json({
     status: "ok",
     service: "ai-runtime-server",
+  });
+});
+
+app.get("/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    version: SERVER_VERSION,
+    timestamp: Date.now(),
   });
 });
 
@@ -201,5 +211,5 @@ Server
 const PORT = 3000;
 
 app.listen(PORT, () => {
-  console.log(`AI runtime running on http://localhost:${PORT}`);
+  console.log(`🚀 Runtime Server ${SERVER_VERSION} running`);
 });

@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "tsx server.ts"
+    "dev": "lsof -ti :3000 | xargs kill -9 || true && tsx server.ts"
   },
   "keywords": [],
   "author": "",
